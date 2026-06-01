@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <conversionRule conversionWord="maskedMsg"
+                    converterClass="com.example.notifications.config.PiiMaskingConverter"/>
+
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdcKeyName>tenantId</includeMdcKeyName>
+            <includeMdcKeyName>campaignId</includeMdcKeyName>
+            <includeMdcKeyName>notificationJobId</includeMdcKeyName>
+            <includeMdcKeyName>retryCount</includeMdcKeyName>
+            <includeMdcKeyName>channel</includeMdcKeyName>
+            <includeMdcKeyName>status</includeMdcKeyName>
+            <messageJsonProvider class="net.logstash.logback.composite.loggingevent.MessageJsonProvider">
+                <fieldName>message</fieldName>
+            </messageJsonProvider>
+            <fieldNames>
+                <timestamp>timestamp</timestamp>
+                <message>message</message>
+                <logger>logger</logger>
+                <level>level</level>
+            </fieldNames>
+            <customFields>{"app":"notifications"}</customFields>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="JSON_CONSOLE"/>
+    </root>
+
+    <logger name="com.example.notifications" level="DEBUG" additivity="false">
+        <appender-ref ref="JSON_CONSOLE"/>
+    </logger>
+
+    <logger name="org.hibernate.SQL" level="WARN" additivity="false">
+        <appender-ref ref="JSON_CONSOLE"/>
+    </logger>
+
+    <logger name="org.flywaydb" level="INFO" additivity="false">
+        <appender-ref ref="JSON_CONSOLE"/>
+    </logger>
+
+</configuration>

@@ -1,0 +1,20 @@
+CREATE TABLE notification_jobs (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id       BIGINT NOT NULL,
+    campaign_id     BIGINT NOT NULL,
+    recipient_id    BIGINT NOT NULL,
+    channel         ENUM('EMAIL','SMS','PUSH') NOT NULL,
+    status          ENUM('PENDING','PROCESSING','SENT','FAILED','SKIPPED') NOT NULL DEFAULT 'PENDING',
+    idempotency_key VARCHAR(255) NOT NULL,
+    retry_count     INT NOT NULL DEFAULT 0,
+    max_retries     INT NOT NULL DEFAULT 3,
+    next_retry_at   TIMESTAMP NULL,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_job_tenant    FOREIGN KEY (tenant_id)    REFERENCES tenants(id),
+    CONSTRAINT fk_job_campaign  FOREIGN KEY (campaign_id)  REFERENCES campaigns(id),
+    CONSTRAINT fk_job_recipient FOREIGN KEY (recipient_id) REFERENCES recipients(id),
+    CONSTRAINT uq_idempotency_key UNIQUE (idempotency_key),
+    INDEX idx_job_status_retry    (status, next_retry_at),
+    INDEX idx_job_tenant_campaign (tenant_id, campaign_id)
+);
