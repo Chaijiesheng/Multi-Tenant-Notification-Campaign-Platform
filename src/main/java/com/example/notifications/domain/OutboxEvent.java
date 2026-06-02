@@ -42,7 +42,10 @@ public class OutboxEvent {
     @Column
     private LocalDateTime processedAt;
 
-    public static OutboxEvent campaignCreated(Long tenantId, Long campaignId, String campaignName, Channel channel) {
+    // ── Factory methods ───────────────────────────────────────────────────────
+
+    public static OutboxEvent campaignCreated(Long tenantId, Long campaignId,
+                                              String campaignName, Channel channel) {
         OutboxEvent event = new OutboxEvent();
         event.setTenantId(tenantId);
         event.setAggregateType("Campaign");
@@ -51,6 +54,24 @@ public class OutboxEvent {
         event.setPayload(String.format(
                 "{\"tenantId\":%d,\"campaignId\":%d,\"campaignName\":\"%s\",\"channel\":\"%s\"}",
                 tenantId, campaignId, campaignName.replace("\"", "\\\""), channel.name()
+        ));
+        return event;
+    }
+
+    /**
+     * Fix 5 — NotificationSent event written atomically with the job's SENT status
+     * update, guaranteeing at-least-once event delivery via the Outbox pattern.
+     */
+    public static OutboxEvent notificationSent(Long tenantId, Long campaignId,
+                                               Long notificationJobId, String channel) {
+        OutboxEvent event = new OutboxEvent();
+        event.setTenantId(tenantId);
+        event.setAggregateType("NotificationJob");
+        event.setAggregateId(notificationJobId.toString());
+        event.setEventType("NotificationSent");
+        event.setPayload(String.format(
+                "{\"tenantId\":%d,\"campaignId\":%d,\"notificationJobId\":%d,\"channel\":\"%s\"}",
+                tenantId, campaignId, notificationJobId, channel
         ));
         return event;
     }

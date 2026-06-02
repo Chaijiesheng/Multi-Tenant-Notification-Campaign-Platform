@@ -16,4 +16,11 @@ public class CreateCampaignRequest {
 
     @NotBlank(message = "Message body is required")
     private String messageBody;
+
+    /**
+     * Fix 6 — when true, the DND window rule is bypassed so the campaign
+     * is delivered regardless of the recipient's quiet hours (e.g. OTPs).
+     * Defaults to false (promotional / non-urgent).
+     */
+    private boolean transactional = false;
 }

@@ -23,9 +23,11 @@ import java.util.concurrent.Executor;
  * Polls for PENDING notification jobs every 2 seconds and dispatches them
  * to the bounded async executor for processing.
  *
- * Sprint 3 changes:
- *   - ProviderFactory replaced by ProviderCircuitBreakerDecorator for circuit-breaker-guarded sends.
- *   - Executor field renamed to asyncTaskExecutor (matches VirtualThreadConfig bean name).
+ * Fixes applied:
+ *  - Fix 2: sentCount/failedCount/skippedCount updated via atomic SQL increments
+ *            (campaignRepository.incrementSentCount etc.) instead of read-modify-write,
+ *            eliminating the race condition under concurrent job processing.
+ *  - Fix 5: NotificationSent outbox event persisted atomically on SENT status transition.
  */
 @Component
 @Slf4j
@@ -37,6 +39,7 @@ public class NotificationDispatchWorker {
     private final CampaignRepository campaignRepository;
     private final TenantRepository tenantRepository;
     private final DeliveryAttemptRepository deliveryAttemptRepository;
+    private final OutboxEventRepository outboxEventRepository;
     private final ProviderCircuitBreakerDecorator providerCircuitBreakerDecorator;
     private final RuleEngine ruleEngine;
     private final ChannelRateLimiter rateLimiter;
@@ -62,9 +65,8 @@ public class NotificationDispatchWorker {
         if (optJob.isEmpty()) return;
 
         NotificationJob job = optJob.get();
-        // Idempotency guard — another thread may have already taken it
         if (job.getStatus() != NotificationStatus.PENDING) {
-            return;
+            return; // Idempotency guard — another thread took it first
         }
 
         try {
@@ -75,7 +77,6 @@ public class NotificationDispatchWorker {
             job.setStatus(NotificationStatus.PROCESSING);
             notificationJobRepository.save(job);
 
-            // Load related entities
             Optional<Recipient> optRecipient = recipientRepository.findById(job.getRecipientId());
             if (optRecipient.isEmpty()) {
                 log.warn("Recipient {} not found — skipping job {}", job.getRecipientId(), job.getId());
@@ -93,7 +94,7 @@ public class NotificationDispatchWorker {
 
             Recipient recipient = optRecipient.get();
 
-            // Rule engine evaluation — short-circuits on first non-PASS
+            // ── Rule engine ─────────────────────────────────────────────────
             RuleResult ruleResult = ruleEngine.evaluate(job, recipient, tenant, campaign);
 
             switch (ruleResult.outcome()) {
@@ -105,8 +106,7 @@ public class NotificationDispatchWorker {
                     return;
                 }
                 case DELAY -> {
-                    log.info("Job {} DELAYED by rule engine until {}: {}",
-                            job.getId(), ruleResult.retryAt(), ruleResult.reason());
+                    log.info("Job {} DELAYED until {}: {}", job.getId(), ruleResult.retryAt(), ruleResult.reason());
                     job.setStatus(NotificationStatus.PENDING);
                     job.setNextRetryAt(ruleResult.retryAt());
                     notificationJobRepository.save(job);
@@ -126,12 +126,10 @@ public class NotificationDispatchWorker {
                     updateCampaignCounts(job);
                     return;
                 }
-                case PASS -> {
-                    // fall through to rate limiter + provider
-                }
+                case PASS -> { /* fall through */ }
             }
 
-            // Rate limit acquisition (virtual-thread-friendly polling)
+            // ── Rate limiter ────────────────────────────────────────────────
             try {
                 rateLimiter.acquire(job.getChannel());
             } catch (InterruptedException e) {
@@ -142,7 +140,7 @@ public class NotificationDispatchWorker {
                 return;
             }
 
-            // Circuit-breaker-guarded provider call
+            // ── Provider call (circuit-breaker-guarded) ─────────────────────
             ProviderResponse response = providerCircuitBreakerDecorator.send(job, recipient);
 
             int attemptNumber = job.getRetryCount() + 1;
@@ -152,6 +150,12 @@ public class NotificationDispatchWorker {
                 job.setStatus(NotificationStatus.SENT);
                 LoggingContext.setStatus(NotificationStatus.SENT.name());
                 log.info("Job {} SENT on attempt {}", job.getId(), attemptNumber);
+
+                // Fix 5 — persist NotificationSent event in the same transaction
+                outboxEventRepository.save(OutboxEvent.notificationSent(
+                        job.getTenantId(), job.getCampaignId(),
+                        job.getId(), job.getChannel().name()));
+
             } else {
                 job.setRetryCount(job.getRetryCount() + 1);
                 if (job.getRetryCount() >= job.getMaxRetries()) {
@@ -199,33 +203,49 @@ public class NotificationDispatchWorker {
         deliveryAttemptRepository.save(attempt);
     }
 
+    /**
+     * Fix 2 — atomic SQL increments replace the previous read-modify-write pattern.
+     *
+     * Previous pattern (UNSAFE under concurrency):
+     *   campaign.setSentCount(campaign.getSentCount() + 1);  // two threads read 5, both write 6
+     *   campaignRepository.save(campaign);
+     *
+     * New pattern (safe):
+     *   UPDATE campaigns SET sent_count = sent_count + 1 WHERE id = ? AND tenant_id = ?
+     *   — atomically applied by MySQL regardless of concurrent updates.
+     *
+     * Final status is determined purely from count queries (no stale entity reads)
+     * and written with a conditional UPDATE (status = 'PROCESSING' guard) so
+     * concurrent threads that both see activeJobs == 0 are idempotent.
+     */
     private void updateCampaignCounts(NotificationJob job) {
         try {
-            Optional<Campaign> optCampaign = campaignRepository.findByIdAndTenantId(
-                    job.getCampaignId(), job.getTenantId());
-            if (optCampaign.isEmpty()) return;
-
-            Campaign campaign = optCampaign.get();
-
-            if (job.getStatus() == NotificationStatus.SENT) {
-                campaign.setSentCount(campaign.getSentCount() + 1);
-            } else if (job.getStatus() == NotificationStatus.FAILED) {
-                campaign.setFailedCount(campaign.getFailedCount() + 1);
-            } else if (job.getStatus() == NotificationStatus.SKIPPED) {
-                campaign.setSkippedCount(campaign.getSkippedCount() + 1);
+            switch (job.getStatus()) {
+                case SENT    -> campaignRepository.incrementSentCount(job.getCampaignId(), job.getTenantId());
+                case FAILED  -> campaignRepository.incrementFailedCount(job.getCampaignId(), job.getTenantId());
+                case SKIPPED -> campaignRepository.incrementSkippedCount(job.getCampaignId(), job.getTenantId());
+                default      -> {} // PENDING / PROCESSING — no counter change
             }
 
             long activeJobs = notificationJobRepository.countActiveByCampaign(
                     job.getCampaignId(), job.getTenantId());
-            if (activeJobs == 0) {
-                boolean hasFailures = campaign.getFailedCount() > 0;
-                campaign.setStatus(hasFailures ? CampaignStatus.PARTIAL_FAILURE : CampaignStatus.COMPLETED);
-                log.info("Campaign {} completed — sent={}, failed={}, skipped={}",
-                        campaign.getId(), campaign.getSentCount(),
-                        campaign.getFailedCount(), campaign.getSkippedCount());
-            }
 
-            campaignRepository.save(campaign);
+            if (activeJobs == 0) {
+                long failedJobs = notificationJobRepository.countFailedByCampaign(
+                        job.getCampaignId(), job.getTenantId());
+                CampaignStatus finalStatus = failedJobs > 0
+                        ? CampaignStatus.PARTIAL_FAILURE
+                        : CampaignStatus.COMPLETED;
+
+                // Conditional update: only transitions from PROCESSING → terminal.
+                // Returns 0 if another thread already wrote the terminal status — safe to ignore.
+                int updated = campaignRepository.updateStatusIfProcessing(
+                        job.getCampaignId(), job.getTenantId(), finalStatus.name());
+
+                if (updated > 0) {
+                    log.info("Campaign {} completed — status={}", job.getCampaignId(), finalStatus);
+                }
+            }
         } catch (Exception e) {
             log.error("Failed to update campaign counts for campaign {} / job {}",
                     job.getCampaignId(), job.getId(), e);

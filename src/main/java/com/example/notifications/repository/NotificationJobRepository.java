@@ -23,6 +23,10 @@ public interface NotificationJobRepository extends JpaRepository<NotificationJob
     @Query("SELECT COUNT(j) FROM NotificationJob j WHERE j.campaignId = :campaignId AND j.tenantId = :tenantId AND j.status NOT IN ('SENT','FAILED','SKIPPED')")
     long countActiveByCampaign(@Param("campaignId") Long campaignId, @Param("tenantId") Long tenantId);
 
+    /** Used to determine COMPLETED vs PARTIAL_FAILURE after all jobs are terminal. */
+    @Query("SELECT COUNT(j) FROM NotificationJob j WHERE j.campaignId = :campaignId AND j.tenantId = :tenantId AND j.status = 'FAILED'")
+    long countFailedByCampaign(@Param("campaignId") Long campaignId, @Param("tenantId") Long tenantId);
+
     @Query("""
             SELECT COUNT(j) FROM NotificationJob j
             WHERE j.tenantId = :tenantId

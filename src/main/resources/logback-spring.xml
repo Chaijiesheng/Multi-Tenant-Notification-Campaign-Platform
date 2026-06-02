@@ -6,12 +6,15 @@
 
     <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <!-- Fix 4: renamed from notificationJobId to notificationId -->
+            <includeMdcKeyName>notificationId</includeMdcKeyName>
             <includeMdcKeyName>tenantId</includeMdcKeyName>
             <includeMdcKeyName>campaignId</includeMdcKeyName>
-            <includeMdcKeyName>notificationJobId</includeMdcKeyName>
             <includeMdcKeyName>retryCount</includeMdcKeyName>
             <includeMdcKeyName>channel</includeMdcKeyName>
             <includeMdcKeyName>status</includeMdcKeyName>
+            <!-- Fix 3: correlationId for distributed tracing -->
+            <includeMdcKeyName>correlationId</includeMdcKeyName>
             <messageJsonProvider class="net.logstash.logback.composite.loggingevent.MessageJsonProvider">
                 <fieldName>message</fieldName>
             </messageJsonProvider>

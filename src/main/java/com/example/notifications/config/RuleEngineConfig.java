@@ -1,7 +1,6 @@
 package com.example.notifications.config;
 
 import com.example.notifications.repository.CampaignRepository;
-import com.example.notifications.repository.DeliveryAttemptRepository;
 import com.example.notifications.repository.NotificationJobRepository;
 import com.example.notifications.repository.SuppressionRepository;
 import com.example.notifications.rule.DeduplicationRule;
@@ -37,7 +36,7 @@ public class RuleEngineConfig {
 
     @Bean
     @Order(4)
-    public DeduplicationRule deduplicationRule(DeliveryAttemptRepository deliveryAttemptRepository) {
-        return new DeduplicationRule(deliveryAttemptRepository);
+    public DeduplicationRule deduplicationRule(CampaignRepository campaignRepository) {
+        return new DeduplicationRule(campaignRepository);
     }
 }

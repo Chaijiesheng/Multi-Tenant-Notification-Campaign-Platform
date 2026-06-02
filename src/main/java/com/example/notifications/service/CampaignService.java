@@ -34,6 +34,9 @@ public class CampaignService {
     /**
      * Creates a campaign, streams the CSV to create recipients and notification jobs,
      * and writes a CampaignCreated outbox event — all in a single atomic transaction.
+     *
+     * Fix 6: campaign.transactional is set from CreateCampaignRequest.isTransactional(),
+     * allowing API callers to flag OTP / critical campaigns that bypass DND quiet hours.
      */
     @Transactional
     public CampaignResponse createCampaign(Long tenantId, CreateCampaignRequest request, MultipartFile csvFile) {
@@ -45,6 +48,7 @@ public class CampaignService {
         campaign.setName(request.getName());
         campaign.setChannel(request.getChannel());
         campaign.setMessageBody(request.getMessageBody());
+        campaign.setTransactional(request.isTransactional()); // Fix 6
         campaign.setStatus(CampaignStatus.DRAFT);
         campaign = campaignRepository.save(campaign);
 
@@ -55,12 +59,11 @@ public class CampaignService {
         campaign = campaignRepository.save(campaign);
 
         // Transactional Outbox — same commit covers Campaign + Recipients + Jobs + OutboxEvent
-        OutboxEvent outboxEvent = OutboxEvent.campaignCreated(
-                tenantId, campaign.getId(), campaign.getName(), campaign.getChannel());
-        outboxEventRepository.save(outboxEvent);
+        outboxEventRepository.save(OutboxEvent.campaignCreated(
+                tenantId, campaign.getId(), campaign.getName(), campaign.getChannel()));
 
-        log.info("Campaign {} created with {} recipients for tenant {}",
-                campaign.getId(), recipientCount, tenantId);
+        log.info("Campaign {} created with {} recipients for tenant {} (transactional={})",
+                campaign.getId(), recipientCount, tenantId, campaign.isTransactional());
         return CampaignResponse.from(campaign);
     }
 
@@ -78,7 +81,7 @@ public class CampaignService {
             String[] row;
             while ((row = reader.readNext()) != null) {
                 if (row.length == 0) continue;
-                String externalId = row.length > 0 ? row[0].trim() : "";
+                String externalId = row[0].trim();
                 if (externalId.isBlank()) {
                     log.warn("Skipping CSV row with blank external_id in campaign {}", campaign.getId());
                     continue;
@@ -162,7 +165,6 @@ public class CampaignService {
         }
         notificationJobRepository.saveAll(failedJobs);
 
-        // Reset campaign status so the worker resumes updating it
         campaign.setStatus(CampaignStatus.PROCESSING);
         campaignRepository.save(campaign);
 
@@ -170,8 +172,7 @@ public class CampaignService {
                 failedJobs.size(), campaignId, tenantId);
 
         return new RetryFailuresResponse(
-                campaignId,
-                failedJobs.size(),
+                campaignId, failedJobs.size(),
                 "Successfully requeued " + failedJobs.size() + " jobs");
     }
 }

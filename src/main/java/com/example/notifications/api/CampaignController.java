@@ -20,18 +20,25 @@ public class CampaignController {
 
     private final CampaignService campaignService;
 
+    /**
+     * Fix 6 — 'transactional' multipart field lets callers flag OTP / critical
+     * campaigns, bypassing the DND quiet-hours rule for SMS and Push.
+     * Field is optional; defaults to false (promotional).
+     */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<CampaignResponse> createCampaign(
             @RequestHeader("X-Tenant-Id") Long tenantId,
             @RequestPart("name") String name,
             @RequestPart("channel") String channel,
             @RequestPart("messageBody") String messageBody,
+            @RequestPart(value = "transactional", required = false) String transactional,
             @RequestPart("file") MultipartFile file) {
 
         CreateCampaignRequest request = new CreateCampaignRequest();
         request.setName(name);
         request.setChannel(Channel.valueOf(channel.toUpperCase()));
         request.setMessageBody(messageBody);
+        request.setTransactional(Boolean.parseBoolean(transactional));
 
         CampaignResponse response = campaignService.createCampaign(tenantId, request, file);
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
